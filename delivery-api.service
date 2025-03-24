@@ -1,0 +1,12 @@
+[Unit]
+Description=Delivery API (Flask + LangChain)
+After=network.target
+
+[Service]
+User=SEU_USUARIO
+WorkingDirectory=/home/SEU_USUARIO/delivery-api
+ExecStart=/home/SEU_USUARIO/delivery-api/venv/bin/python app.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
