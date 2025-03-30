@@ -15,14 +15,15 @@ with open(CONFIG_FILE, "r") as file:
 os.environ["OPENAI_API_KEY"] = config["api_key"]["key"]
 model = config["model"]["name"]
 
-# Nome do banco de dados para dados de suporte
+# Nome do banco de dados
 DATABASE_PATH = "delivery.db"
 
 # Inicia Flask
 app = Flask(__name__)
 
-# Instancia o modelo da OpenAI
-chat = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+# Modelos da OpenAI
+chat_analisador = ChatOpenAI(model=model, temperature=0)     # Para interpretar a intenção
+chat_resposta = ChatOpenAI(model=model, temperature=0.7)     # Para gerar respostas mais naturais
 
 # Conecta ao banco SQLite
 def get_db_connection():
@@ -30,34 +31,13 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-# Interpreta pergunta com LLM e retorna a intenção
+# Interpreta a intenção da pergunta do usuário
 def avaliar_pergunta_delivery(question):
     system_prompt = """
 Você é um assistente virtual inteligente e cordial especializado em análise de dados de delivery. 
 Sua função é ajudar o usuário a entender melhor os dados do negócio e tomar decisões mais informadas.
 
-Ao iniciar a conversa, cumprimente o usuário de forma educada e apresente-se brevemente. 
-Diga que está disponível para responder perguntas sobre os dados de pedidos e fornecer análises como:
-
-- Ticket médio
-- Produtos mais vendidos
-- Tempo médio de entrega
-- Quantidade total de pedidos
-- Faturamento
-- Lucro estimado
-- Margem de lucro
-- Faturamento mensal
-- Vendas por categoria
-
-Caso a pergunta do usuário esteja fora desse contexto, avise com educação que não poderá ajudar.
-
-Exemplos de perguntas válidas:
-- "Qual o ticket médio em São Paulo?"
-- "Qual o faturamento em março?"
-- "Quais os produtos mais vendidos em BH?"
-
-Sempre responda de forma clara, objetiva e educada.
-Você é um analisador de intenção para perguntas sobre delivery. Sua única tarefa é identificar a intenção da pergunta e retornar um JSON estruturado.
+Você é um analisador de intenção. Sua única tarefa é identificar a intenção da pergunta e retornar um JSON estruturado.
 
 ⚠️ Responda SOMENTE com um JSON válido. Não inclua texto explicativo, saudação ou qualquer outra coisa.
 
@@ -71,17 +51,16 @@ Formato do JSON:
     }
 }
 
-Se um filtro não for mencionado, **não o inclua**. Se a pergunta não for sobre dados de delivery, retorne:
-
+Se um filtro não for mencionado, **não o inclua**.  
+Se a pergunta não for sobre dados de delivery, retorne:  
 { "tipo": null, "filtros": {} }
 """
     human_prompt = f"Pergunta: \"{question}\""
-    response = chat.invoke([
+    response = chat_analisador.invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prompt)
-])
+    ])
 
-# Debug opcional:
     print("🧠 Resposta da LLM:", response.content)
 
     try:
@@ -89,7 +68,25 @@ Se um filtro não for mencionado, **não o inclua**. Se a pergunta não for sobr
     except Exception as e:
         raise ValueError(f"Erro ao interpretar a resposta da LLM: {e}\nResposta recebida: {response.content}")
 
-# Monta e executa SQL com base no JSON retornado pela LLM
+# Gera a resposta final natural ao usuário
+def responder_ao_usuario(analise, resultado_sql):
+    prompt = f"""
+Você é um assistente virtual simpático e especialista em dados de delivery.
+
+Com base na intenção abaixo e no resultado da análise, gere uma resposta clara, educada e útil para o usuário.
+
+🎯 Intenção:
+{json.dumps(analise, indent=2)}
+
+📊 Resultado da análise:
+{resultado_sql}
+
+➡️ Responda de forma natural e objetiva, como se estivesse conversando com o dono do delivery.
+"""
+    response = chat_resposta.invoke([HumanMessage(content=prompt)])
+    return response.content.strip()
+
+# Executa a consulta no banco com base nos filtros e tipo
 def consultar_delivery(metadados):
     tipo = metadados.get("tipo")
     filtros = metadados.get("filtros", {})
@@ -200,7 +197,8 @@ def ask():
 
     try:
         analise = avaliar_pergunta_delivery(question)
-        resposta = consultar_delivery(analise)
+        resultado_sql = consultar_delivery(analise)
+        resposta = responder_ao_usuario(analise, resultado_sql)
     except Exception as e:
         resposta = f"Erro ao processar a pergunta: {str(e)}"
 
@@ -209,6 +207,3 @@ def ask():
 # Roda servidor
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000, debug=True)
-
-
-# DATABASE_PATH
