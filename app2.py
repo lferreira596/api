@@ -22,12 +22,12 @@ db = SQLDatabase.from_uri("sqlite:///delivery.db")
 # 🧠 Ferramentas
 tools = [
     Tool(
-        name="Consultar Banco de Delivery",
+        name="Consultar_Banco_delivery",
         func=QuerySQLDataBaseTool(db=db).run,
         description="Use esta ferramenta para responder perguntas sobre pedidos, produtos, ticket médio, faturamento, etc."
     ),
     Tool(
-        name="Info sobre o Banco",
+        name="Info_sobre_banco",
         func=InfoSQLDatabaseTool(db=db).run,
         description="Mostra estrutura das tabelas e colunas do banco de dados."
     )
