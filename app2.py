@@ -33,36 +33,61 @@ def get_db_connection():
 # Interpreta pergunta com LLM e retorna a intenção
 def avaliar_pergunta_delivery(question):
     system_prompt = """
-    Você é um analista de dados de pedidos de delivery. Sua tarefa é entender perguntas em linguagem natural
-    e retornar um JSON com a métrica a ser analisada e os filtros desejados.
+Você é um assistente virtual inteligente e cordial especializado em análise de dados de delivery. 
+Sua função é ajudar o usuário a entender melhor os dados do negócio e tomar decisões mais informadas.
 
-    Métricas possíveis:
-    - "ticket_medio": valor médio dos pedidos
-    - "mais_vendidos": produtos mais vendidos
-    - "tempo_medio_entrega": tempo médio de entrega
-    - "quantidade_pedidos": número de pedidos
+Ao iniciar a conversa, cumprimente o usuário de forma educada e apresente-se brevemente. 
+Diga que está disponível para responder perguntas sobre os dados de pedidos e fornecer análises como:
 
-    Filtros possíveis (opcionais): cidade, bairro, produto, data_pedido
+- Ticket médio
+- Produtos mais vendidos
+- Tempo médio de entrega
+- Quantidade total de pedidos
+- Faturamento
+- Lucro estimado
+- Margem de lucro
+- Faturamento mensal
+- Vendas por categoria
 
-    Responda SOMENTE com um JSON válido no seguinte formato:
-    {
-        "tipo": "<ticket_medio|mais_vendidos|tempo_medio_entrega|quantidade_pedidos>",
-        "filtros": {
-            "cidade": "São Paulo",
-            "bairro": "Moema",
-            "produto": "pizza",
-            "data_pedido": "2024-03-01"
-        }
+Caso a pergunta do usuário esteja fora desse contexto, avise com educação que não poderá ajudar.
+
+Exemplos de perguntas válidas:
+- "Qual o ticket médio em São Paulo?"
+- "Qual o faturamento em março?"
+- "Quais os produtos mais vendidos em BH?"
+
+Sempre responda de forma clara, objetiva e educada.
+Você é um analisador de intenção para perguntas sobre delivery. Sua única tarefa é identificar a intenção da pergunta e retornar um JSON estruturado.
+
+⚠️ Responda SOMENTE com um JSON válido. Não inclua texto explicativo, saudação ou qualquer outra coisa.
+
+Formato do JSON:
+
+{
+    "tipo": "<ticket_medio|mais_vendidos|tempo_medio_entrega|quantidade_pedidos|faturamento|lucro|margem|faturamento_mensal|vendas_por_categoria>",
+    "filtros": {
+        "cidade": "São Paulo",
+        "data_pedido": "2024-03"
     }
+}
 
-    Caso um filtro não seja mencionado, omita-o.
-    """
+Se um filtro não for mencionado, **não o inclua**. Se a pergunta não for sobre dados de delivery, retorne:
+
+{ "tipo": null, "filtros": {} }
+"""
     human_prompt = f"Pergunta: \"{question}\""
     response = chat.invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prompt)
-    ])
-    return json.loads(response.content.strip())
+])
+
+# Debug opcional:
+    print("🧠 Resposta da LLM:", response.content)
+
+    try:
+        return json.loads(response.content)
+    except Exception as e:
+        raise ValueError(f"Erro ao interpretar a resposta da LLM: {e}\nResposta recebida: {response.content}")
 
 # Monta e executa SQL com base no JSON retornado pela LLM
 def consultar_delivery(metadados):
@@ -71,8 +96,12 @@ def consultar_delivery(metadados):
 
     where_clauses = []
     params = []
+
     for campo, valor in filtros.items():
-        where_clauses.append(f"{campo} = ?")
+        if campo == "data_pedido" and len(valor) == 7:
+            where_clauses.append("strftime('%Y-%m', data_pedido) = ?")
+        else:
+            where_clauses.append(f"{campo} = ?")
         params.append(valor)
 
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
@@ -83,22 +112,22 @@ def consultar_delivery(metadados):
     if tipo == "ticket_medio":
         cursor.execute(f"SELECT AVG(valor_total) AS resultado FROM pedidos {where_sql}", params)
         row = cursor.fetchone()
-        return f"O ticket médio é R$ {row['resultado']:.2f}" if row and row['resultado'] else "Não há dados suficientes."
+        return f"O ticket médio é R$ {row['resultado']:.2f}" if row and row['resultado'] else "Sem dados."
 
     elif tipo == "tempo_medio_entrega":
         cursor.execute(f"SELECT AVG(tempo_entrega) AS resultado FROM pedidos {where_sql}", params)
         row = cursor.fetchone()
-        return f"O tempo médio de entrega é {round(row['resultado'])} minutos." if row and row['resultado'] else "Não há dados suficientes."
+        return f"O tempo médio de entrega é {round(row['resultado'])} minutos." if row and row['resultado'] else "Sem dados."
 
     elif tipo == "mais_vendidos":
-        cursor.execute(f'''
+        cursor.execute(f"""
             SELECT produto, COUNT(*) AS total 
             FROM pedidos 
             {where_sql}
             GROUP BY produto 
             ORDER BY total DESC 
             LIMIT 5
-        ''', params)
+        """, params)
         rows = cursor.fetchall()
         if not rows:
             return "Nenhum produto encontrado."
@@ -110,7 +139,52 @@ def consultar_delivery(metadados):
     elif tipo == "quantidade_pedidos":
         cursor.execute(f"SELECT COUNT(*) AS total FROM pedidos {where_sql}", params)
         row = cursor.fetchone()
-        return f"Total de pedidos: {row['total']}" if row else "Não há dados disponíveis."
+        return f"Total de pedidos: {row['total']}" if row else "Sem dados."
+
+    elif tipo == "faturamento":
+        cursor.execute(f"SELECT SUM(valor_total) AS total FROM pedidos {where_sql}", params)
+        row = cursor.fetchone()
+        return f"Faturamento total: R$ {row['total']:.2f}" if row and row['total'] else "Sem dados."
+
+    elif tipo == "lucro":
+        cursor.execute(f"SELECT SUM(valor_total - (custo_unitario * quantidade)) AS lucro FROM pedidos {where_sql}", params)
+        row = cursor.fetchone()
+        return f"Lucro estimado: R$ {row['lucro']:.2f}" if row and row['lucro'] else "Sem dados."
+
+    elif tipo == "margem":
+        cursor.execute(f"""
+            SELECT 
+                SUM(valor_total - (custo_unitario * quantidade)) AS lucro, 
+                SUM(valor_total) AS receita
+            FROM pedidos {where_sql}
+        """, params)
+        row = cursor.fetchone()
+        if row and row['receita']:
+            margem = (row['lucro'] / row['receita']) * 100
+            return f"A margem bruta é de {margem:.2f}%"
+        return "Sem dados."
+
+    elif tipo == "faturamento_mensal":
+        cursor.execute(f"""
+            SELECT strftime('%Y-%m', data_pedido) AS mes, SUM(valor_total) AS total
+            FROM pedidos {where_sql}
+            GROUP BY mes ORDER BY mes
+        """, params)
+        rows = cursor.fetchall()
+        if not rows:
+            return "Sem dados mensais."
+        return "\n".join([f"{r['mes']}: R$ {r['total']:.2f}" for r in rows])
+
+    elif tipo == "vendas_por_categoria":
+        cursor.execute(f"""
+            SELECT categoria, SUM(quantidade) AS total
+            FROM pedidos {where_sql}
+            GROUP BY categoria
+        """, params)
+        rows = cursor.fetchall()
+        if not rows:
+            return "Sem dados por categoria."
+        return "\n".join([f"{r['categoria']}: {r['total']} unidades" for r in rows])
 
     else:
         return "Desculpe, não entendi a análise solicitada."
