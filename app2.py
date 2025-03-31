@@ -23,8 +23,26 @@ model = config["model"]["name"]
 DATABASE_PATH = "delivery.db"
 db = SQLDatabase.from_uri(f"sqlite:///{DATABASE_PATH}")
 
-# Captura o schema do banco como contexto inicial
-schema_context = InfoSQLDatabaseTool(db=db).run("")
+# ✅ Schema descrito manualmente para melhor compreensão do agente
+schema_context = """
+Tabela: pedidos
+
+Colunas:
+- id: identificador do pedido
+- cliente: nome do cliente
+- cidade: cidade do cliente
+- bairro: bairro do cliente
+- produto: nome do produto comprado
+- categoria: categoria do produto (Pizza, Lanche, Bebida etc)
+- data_pedido: data em que o pedido foi feito (formato YYYY-MM-DD)
+- valor_total: valor total do pedido
+- tempo_entrega: tempo da entrega em minutos
+- quantidade: quantidade de unidades do produto
+- custo_unitario: custo de produção de uma unidade
+- forma_pagamento: meio de pagamento (Pix, Cartão, Dinheiro)
+"""
+
+# 🧠 Prompt com contexto do schema
 system_prompt = SystemMessage(
     content=f"""
 Você é um analista de dados inteligente. Use os dados abaixo para responder perguntas sobre o delivery.
@@ -43,7 +61,7 @@ tools = [
     Tool(
         name="query_delivery_db",
         func=QuerySQLDatabaseTool(db=db).run,
-        description="Executa consultas SQL na tabela 'pedidos' com colunas como cidade, bairro, produto, valor_total, tempo_entrega e data_pedido."
+        description="Executa consultas SQL na tabela 'pedidos' com colunas como cidade, bairro, produto, categoria, valor_total, quantidade, tempo_entrega e data_pedido."
     ),
     Tool(
         name="info_sobre_banco",
