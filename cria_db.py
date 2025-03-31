@@ -1,85 +1,109 @@
-import sqlite3
-from faker import Faker
-import random
-from datetime import datetime, timedelta
+import os
+import yaml
+from flask import Flask, request, jsonify
+from langchain.agents import initialize_agent, Tool
+from langchain.agents.agent_types import AgentType
+from langchain_community.utilities import SQLDatabase
+from langchain_community.tools import QuerySQLDatabaseTool, InfoSQLDatabaseTool
+from langchain_openai import ChatOpenAI
+from langchain.schema import SystemMessage
 
-DB_NAME = "delivery.db"
+# ======================
+# 🔐 CONFIGURAÇÃO
+# ======================
+with open("config.yaml", "r") as f:
+    config = yaml.safe_load(f)
 
-def create_database():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DROP TABLE IF EXISTS pedidos")
+os.environ["OPENAI_API_KEY"] = config["api_key"]["key"]
+model = config["model"]["name"]
 
-    cursor.execute("""
-    CREATE TABLE pedidos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cliente TEXT,
-        cidade TEXT,
-        bairro TEXT,
-        produto TEXT,
-        categoria TEXT,
-        data_pedido DATE,
-        valor_total REAL,
-        tempo_entrega INTEGER,
-        quantidade INTEGER,
-        custo_unitario REAL,
-        forma_pagamento TEXT
+# ======================
+# 🔗 BANCO DE DADOS
+# ======================
+DATABASE_PATH = "delivery.db"
+db = SQLDatabase.from_uri(f"sqlite:///{DATABASE_PATH}")
+
+# ✅ Schema descrito manualmente para melhor compreensão do agente
+schema_context = """
+Tabela: pedidos
+
+Colunas:
+- id: identificador do pedido
+- cliente: nome do cliente
+- cidade: cidade do cliente
+- bairro: bairro do cliente
+- produto: nome do produto comprado
+- categoria: categoria do produto (Pizza, Lanche, Bebida etc)
+- data_pedido: data em que o pedido foi feito (formato YYYY-MM-DD)
+- valor_total: valor total do pedido
+- tempo_entrega: tempo da entrega em minutos
+- quantidade: quantidade de unidades do produto
+- custo_unitario: custo de produção de uma unidade
+- forma_pagamento: meio de pagamento (Pix, Cartão, Dinheiro)
+"""
+
+# 🧠 Prompt com contexto do schema
+system_prompt = SystemMessage(
+    content=f"""
+Você é um analista de dados inteligente. Use os dados abaixo para responder perguntas sobre o delivery.
+
+📊 Estrutura do banco de dados:
+{schema_context}
+
+Sempre que possível, responda em linguagem natural com base nos resultados do banco.
+"""
+)
+
+# ======================
+# 🧠 FERRAMENTAS DO AGENTE
+# ======================
+tools = [
+    Tool(
+        name="query_delivery_db",
+        func=QuerySQLDatabaseTool(db=db).run,
+        description="Executa consultas SQL na tabela 'pedidos' com colunas como cidade, bairro, produto, categoria, valor_total, quantidade, tempo_entrega e data_pedido."
+    ),
+    Tool(
+        name="info_sobre_banco",
+        func=InfoSQLDatabaseTool(db=db).run,
+        description="Retorna estrutura de tabelas e colunas disponíveis no banco SQLite."
     )
-    """)
-    conn.commit()
-    conn.close()
+]
 
-def insert_sample_data(n=3000):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    faker = Faker("pt_BR")
+llm = ChatOpenAI(model=model, temperature=0.5)
 
-    produtos = [
-        ("Pizza Calabresa", "Pizza", 34.00, 16.00),
-        ("Pizza Marguerita", "Pizza", 36.00, 18.00),
-        ("Pizza Portuguesa", "Pizza", 38.00, 20.00),
-        ("Hambúrguer Duplo", "Lanche", 45.00, 15.00),
-        ("Combo Burguer + Refri", "Lanche", 55.00, 18.00),
-        ("Coca-Cola 2L", "Bebida", 10.00, 4.00),
-        ("Pizza Quatro Queijos", "Pizza", 36.00, 18.00),
-        ("Esfirra de Carne", "Lanche", 28.00, 12.00),
-        ("Água com Gás", "Bebida", 5.00, 1.50),
-        ("Suco Natural", "Bebida", 12.00, 3.00)
-    ]
+# ======================
+# 🤖 AGENTE LANGCHAIN
+# ======================
+agent = initialize_agent(
+    tools=tools,
+    llm=llm,
+    agent=AgentType.OPENAI_FUNCTIONS,
+    verbose=True,
+    agent_kwargs={"system_message": system_prompt}
+)
 
-    cidades_bairros = {
-        "São Paulo": ["Moema", "Pinheiros", "Vila Mariana", "Tatuapé", "Itaim Bibi"],
-        "Rio de Janeiro": ["Copacabana", "Barra", "Tijuca", "Leblon", "Botafogo"],
-        "Belo Horizonte": ["Savassi", "Centro", "Pampulha", "Funcionários", "Serra"]
-    }
+# ======================
+# 🚀 API FLASK
+# ======================
+app = Flask(__name__)
 
-    pagamentos = ["Cartão", "Pix", "Dinheiro"]
-    base_date = datetime.strptime("2024-02-01", "%Y-%m-%d")
+@app.route("/ask", methods=["POST"])
+def ask():
+    data = request.get_json()
+    if not data or "question" not in data:
+        return jsonify({"error": "Requisição inválida. Forneça a chave 'question'."}), 400
 
-    for _ in range(n):
-        cliente = faker.name()
-        cidade = random.choice(list(cidades_bairros.keys()))
-        bairro = random.choice(cidades_bairros[cidade])
-        produto, categoria, preco, custo = random.choice(produtos)
-        quantidade = random.randint(1, 5)
-        valor_total = round(preco * quantidade, 2)
-        tempo_entrega = random.randint(20, 80)
-        data_pedido = base_date + timedelta(days=random.randint(0, 89))
-        forma_pagamento = random.choice(pagamentos)
+    pergunta = data["question"]
 
-        cursor.execute("""
-            INSERT INTO pedidos (cliente, cidade, bairro, produto, categoria, data_pedido,
-                                 valor_total, tempo_entrega, quantidade, custo_unitario, forma_pagamento)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            cliente, cidade, bairro, produto, categoria, data_pedido.strftime("%Y-%m-%d"),
-            valor_total, tempo_entrega, quantidade, custo, forma_pagamento
-        ))
+    try:
+        resposta = agent.run(pergunta)
+        return jsonify({"answer": resposta})
+    except Exception as e:
+        return jsonify({"error": f"Erro ao processar a pergunta: {str(e)}"}), 500
 
-    conn.commit()
-    conn.close()
-
+# ======================
+# 🏁 MAIN
+# ======================
 if __name__ == "__main__":
-    create_database()
-    insert_sample_data()
-    print("✅ Banco 'delivery.db' com 3.000 pedidos criado com sucesso!")
+    app.run(host="0.0.0.0", port=5000, debug=True)
